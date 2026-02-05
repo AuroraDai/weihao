@@ -1,10 +1,27 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { isAuthenticated, logout } from '$lib/auth';
+	import { goto } from '$app/navigation';
 
-	type NewsItem = { date?: string; title?: string; link?: string };
+	type NewsItem = { date?: string; title?: string; link?: string; source?: string };
 	type ScreenerRow = Record<string, string>;
 
 	const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+
+	// Check authentication
+	let authenticated = $state(false);
+
+	onMount(() => {
+		authenticated = isAuthenticated();
+		if (!authenticated) {
+			goto('/login');
+		}
+	});
+
+	const handleLogout = () => {
+		logout();
+		goto('/login');
+	};
 
 	let ticker = $state('AAPL');
 	let loading = $state(false);
@@ -140,10 +157,20 @@
 	};
 </script>
 
+{#if !authenticated}
+	<div class="loading">验证中...</div>
+{:else}
 <main class="page">
 	<section class="card">
-		<h1>Finviz data viewer</h1>
-		<p class="muted">Python backend scrapes Finviz; Svelte renders it.</p>
+		<div class="card-header">
+			<div>
+				<h1>Finviz data viewer</h1>
+				<p class="muted">Python backend scrapes Finviz; Svelte renders it.</p>
+			</div>
+			<button class="logout-btn" onclick={handleLogout} type="button">
+				退出登录
+			</button>
+		</div>
 
 		<form
 			class="form"
@@ -341,6 +368,7 @@
 		{/if}
 	</section>
 </main>
+{/if}
 
 <style>
 	:global(body) {
@@ -581,6 +609,33 @@
 		align-items: center;
 		gap: 1rem;
 		flex-wrap: wrap;
+		margin-bottom: 1rem;
+	}
+
+	.logout-btn {
+		background: transparent;
+		border: 1px solid #334155;
+		color: #94a3b8;
+		border-radius: 8px;
+		padding: 0.5rem 1rem;
+		cursor: pointer;
+		font-size: 0.9rem;
+		transition: all 0.2s ease;
+	}
+
+	.logout-btn:hover {
+		border-color: #f87171;
+		color: #f87171;
+		background: rgba(248, 113, 113, 0.1);
+	}
+
+	.loading {
+		min-height: 100vh;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #94a3b8;
+		font-size: 1.1rem;
 	}
 
 	.controls {

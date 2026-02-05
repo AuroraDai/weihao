@@ -198,41 +198,29 @@ def get_news_summary(url: str = Query(..., description="News article URL to summ
             else:
                 summary = article.text[:500] + "..." if len(article.text) > 500 else article.text
 
-        # Use the summary as-is (create_better_summary already returns complete sentences)
-        # Only ensure it ends at a complete sentence if needed
+        # Limit summary to 500 words maximum for better conciseness, ensuring it ends at a complete sentence
         summary_en = summary or "Unable to generate summary for this article."
-        
         if summary_en and summary_en != "Unable to generate summary for this article.":
-            summary_en = summary_en.rstrip()
-            # Ensure it ends with proper sentence punctuation
-            if not summary_en.endswith(('.', '!', '?', '。', '！', '？')):
-                # Find the last sentence ending
-                last_punct = max(
-                    summary_en.rfind('.'),
-                    summary_en.rfind('!'),
-                    summary_en.rfind('?')
-                )
-                if last_punct > 0:
-                    summary_en = summary_en[:last_punct + 1]
+            words = summary_en.split()
+            if len(words) > 500:
+                # Take first 500 words and join them
+                truncated = " ".join(words[:500])
+                # Find the last complete sentence ending (. ! or ?) within the truncated text
+                # Search backwards from the end to find the last sentence boundary
+                sentence_endings = list(re.finditer(r'[.!?]\s+', truncated))
+                if sentence_endings:
+                    # Use the last sentence ending found
+                    last_ending = sentence_endings[-1]
+                    summary_en = truncated[:last_ending.end()].rstrip() + "..."
+                else:
+                    # If no sentence ending found, just truncate and add ellipsis
+                    summary_en = truncated + "..."
         
-        # Translate to Chinese (Simplified) - translate the complete English summary
+        # Translate to Chinese (Simplified)
         summary_zh = summary_en
         try:
             translator = GoogleTranslator(source='en', target='zh-CN')
-            # Translate the complete summary
             summary_zh = translator.translate(summary_en)
-            
-            # Ensure Chinese translation ends at a complete sentence
-            # Chinese sentence endings: 。！？
-            if summary_zh and not summary_zh.rstrip().endswith(('。', '！', '？', '.', '!', '?')):
-                # Find the last Chinese sentence ending
-                last_chinese_punct = max(
-                    summary_zh.rfind('。'),
-                    summary_zh.rfind('！'),
-                    summary_zh.rfind('？')
-                )
-                if last_chinese_punct > len(summary_zh) * 0.7:  # Only if near the end
-                    summary_zh = summary_zh[:last_chinese_punct + 1]
         except Exception as trans_exc:
             # If translation fails, use English as fallback
             print(f"Translation error: {trans_exc}")
