@@ -277,7 +277,7 @@ if not st.session_state.authenticated and 'auth_token' not in query_params:
     </script>
     """
     # Use components.html - this will execute immediately
-    st.components.v1.html(auth_check_js, height=0, key=f"auth_check_{int(datetime.now().timestamp())}")
+    st.components.v1.html(auth_check_js, height=0)
 
 # Initialize summary storage
 if 'summaries' not in st.session_state:
