@@ -269,8 +269,6 @@ if 'auto_refresh_enabled' not in st.session_state:
     st.session_state.auto_refresh_enabled = False
 if 'last_refresh_time' not in st.session_state:
     st.session_state.last_refresh_time = None
-if 'next_refresh_time' not in st.session_state:
-    st.session_state.next_refresh_time = None
 
 # Initialize quote data storage
 if 'current_ticker' not in st.session_state:
@@ -457,20 +455,12 @@ if get_quote_btn and ticker:
         st.rerun()
 
 # Auto-refresh logic using st_autorefresh (doesn't reload page, preserves session state)
+# Refresh data every 5 minutes when auto-refresh is enabled
 if st.session_state.auto_refresh_enabled and 'current_ticker' in st.session_state and st.session_state.current_ticker:
-    # Use st_autorefresh to check every 30 seconds if it's time to refresh (5 minutes)
-    count = st_autorefresh(interval=30*1000, key="data_autorefresh", limit=None)
-    
-    # Check if it's time to refresh (every 5 minutes)
-    if st.session_state.next_refresh_time is None:
-        # Initialize next refresh time
-        st.session_state.next_refresh_time = datetime.now() + timedelta(minutes=5)
-    elif datetime.now() >= st.session_state.next_refresh_time:
-        # Time to refresh - do it silently
-        if fetch_quote_data(st.session_state.current_ticker, silent=True):
-            # Reset next refresh time
-            st.session_state.next_refresh_time = datetime.now() + timedelta(minutes=5)
-            st.rerun()
+    # Use st_autorefresh to trigger rerun every 5 minutes
+    st_autorefresh(interval=5*60*1000, key="data_autorefresh", limit=None)
+    # Fetch fresh data silently (this runs on each rerun triggered by st_autorefresh)
+    fetch_quote_data(st.session_state.current_ticker, silent=True)
 
 # Display stored data
 if 'current_quote' in st.session_state and st.session_state.current_quote:
@@ -608,8 +598,6 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 自动刷新 (5分钟)", value=st.session_state.auto_refresh_enabled, key="auto_refresh_checkbox")
     if auto_refresh != st.session_state.auto_refresh_enabled:
         st.session_state.auto_refresh_enabled = auto_refresh
-        if auto_refresh and 'current_ticker' in st.session_state and st.session_state.current_ticker:
-            st.session_state.next_refresh_time = datetime.now() + timedelta(minutes=5)
         st.rerun()
     
     # Show last refresh time
