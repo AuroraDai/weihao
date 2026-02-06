@@ -224,36 +224,6 @@ st.markdown("""
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# Check for saved authentication token in browser localStorage
-def check_saved_auth():
-    """Check if user has saved authentication in browser"""
-    # Use JavaScript to check localStorage
-    auth_check_js = """
-    <script>
-    (function() {
-        const savedAuth = localStorage.getItem('finviz_auth_token');
-        const savedTime = localStorage.getItem('finviz_auth_time');
-        if (savedAuth && savedTime) {
-            // Check if token is still valid (30 days)
-            const now = Date.now();
-            const saved = parseInt(savedTime);
-            const daysDiff = (now - saved) / (1000 * 60 * 60 * 24);
-            if (daysDiff < 30) {
-                // Token is valid, set URL parameter to trigger authentication
-                if (window.location.search.indexOf('auth_token=') === -1) {
-                    window.location.href = window.location.pathname + '?auth_token=' + savedAuth;
-                }
-            } else {
-                // Token expired, remove it
-                localStorage.removeItem('finviz_auth_token');
-                localStorage.removeItem('finviz_auth_time');
-            }
-        }
-    })();
-    </script>
-    """
-    st.components.v1.html(auth_check_js, height=0)
-
 # Generate a simple auth token (hash of password + timestamp)
 def generate_auth_token():
     """Generate a simple auth token"""
@@ -273,9 +243,41 @@ if 'auth_token' in query_params:
         st.query_params.clear()
         st.rerun()
 
-# Check saved auth on first load
-if not st.session_state.authenticated:
-    check_saved_auth()
+# Check for saved authentication token in browser localStorage
+# This runs on every page load if not authenticated and no token in URL
+if not st.session_state.authenticated and 'auth_token' not in query_params:
+    # Use JavaScript to check localStorage and redirect if token exists
+    # Place this early in the page so it executes before Streamlit renders
+    auth_check_js = """
+    <script>
+    (function() {
+        // Only run if we don't already have auth_token in URL
+        if (window.location.search.indexOf('auth_token=') === -1) {
+            const savedAuth = localStorage.getItem('finviz_auth_token');
+            const savedTime = localStorage.getItem('finviz_auth_time');
+            if (savedAuth && savedTime) {
+                // Check if token is still valid (30 days)
+                const now = Date.now();
+                const saved = parseInt(savedTime);
+                const daysDiff = (now - saved) / (1000 * 60 * 60 * 24);
+                if (daysDiff < 30) {
+                    // Token is valid, redirect with token in URL
+                    const url = new URL(window.location);
+                    url.searchParams.set('auth_token', savedAuth);
+                    window.location.href = url.toString();
+                    return; // Stop execution
+                } else {
+                    // Token expired, remove it
+                    localStorage.removeItem('finviz_auth_token');
+                    localStorage.removeItem('finviz_auth_time');
+                }
+            }
+        }
+    })();
+    </script>
+    """
+    # Use components.html - this will execute immediately
+    st.components.v1.html(auth_check_js, height=0, key=f"auth_check_{int(datetime.now().timestamp())}")
 
 # Initialize summary storage
 if 'summaries' not in st.session_state:
