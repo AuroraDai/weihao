@@ -231,7 +231,7 @@ def generate_auth_token():
     token_string = APP_PASSWORD + timestamp
     return hashlib.md5(token_string.encode()).hexdigest()[:16]
 
-# Check URL parameters for auth token
+# Check URL parameters for auth token FIRST (before checking localStorage)
 query_params = st.query_params
 if 'auth_token' in query_params:
     # Token is passed via URL, verify it's valid format
@@ -245,39 +245,47 @@ if 'auth_token' in query_params:
 
 # Check for saved authentication token in browser localStorage
 # This runs on every page load if not authenticated and no token in URL
+# Use st.markdown with unsafe_allow_html to ensure JavaScript executes early
 if not st.session_state.authenticated and 'auth_token' not in query_params:
-    # Use JavaScript to check localStorage and redirect if token exists
-    # Place this early in the page so it executes before Streamlit renders
+    # Inject JavaScript at the very top of the page to check localStorage
     auth_check_js = """
     <script>
+    // Execute immediately when script loads
     (function() {
-        // Only run if we don't already have auth_token in URL
-        if (window.location.search.indexOf('auth_token=') === -1) {
-            const savedAuth = localStorage.getItem('finviz_auth_token');
-            const savedTime = localStorage.getItem('finviz_auth_time');
-            if (savedAuth && savedTime) {
-                // Check if token is still valid (30 days)
-                const now = Date.now();
-                const saved = parseInt(savedTime);
-                const daysDiff = (now - saved) / (1000 * 60 * 60 * 24);
-                if (daysDiff < 30) {
-                    // Token is valid, redirect with token in URL
-                    const url = new URL(window.location);
-                    url.searchParams.set('auth_token', savedAuth);
-                    window.location.href = url.toString();
-                    return; // Stop execution
-                } else {
-                    // Token expired, remove it
-                    localStorage.removeItem('finviz_auth_token');
-                    localStorage.removeItem('finviz_auth_time');
+        try {
+            // Only run if we don't already have auth_token in URL
+            if (window.location.search.indexOf('auth_token=') === -1) {
+                const savedAuth = localStorage.getItem('finviz_auth_token');
+                const savedTime = localStorage.getItem('finviz_auth_time');
+                
+                if (savedAuth && savedTime) {
+                    // Check if token is still valid (30 days)
+                    const now = Date.now();
+                    const saved = parseInt(savedTime);
+                    if (!isNaN(saved)) {
+                        const daysDiff = (now - saved) / (1000 * 60 * 60 * 24);
+                        if (daysDiff < 30) {
+                            // Token is valid, redirect with token in URL immediately
+                            const currentUrl = window.location.href.split('?')[0];
+                            const separator = currentUrl.includes('?') ? '&' : '?';
+                            window.location.replace(currentUrl + separator + 'auth_token=' + savedAuth);
+                            return;
+                        } else {
+                            // Token expired, remove it
+                            localStorage.removeItem('finviz_auth_token');
+                            localStorage.removeItem('finviz_auth_time');
+                        }
+                    }
                 }
             }
+        } catch (e) {
+            console.error('Auth check error:', e);
         }
     })();
     </script>
     """
-    # Use components.html - this will execute immediately
-    st.components.v1.html(auth_check_js, height=0)
+    # Use st.markdown to inject script at the top of the page
+    st.markdown(auth_check_js, unsafe_allow_html=True)
 
 # Initialize summary storage
 if 'summaries' not in st.session_state:
