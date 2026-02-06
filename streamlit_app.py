@@ -377,9 +377,6 @@ def fetch_quote_data(ticker_symbol: str, silent: bool = False):
         st.session_state.current_chart_url = data.get("chart_url", "")
         st.session_state.last_refresh_time = datetime.now()
         
-        if st.session_state.auto_refresh_enabled:
-            st.session_state.next_refresh_time = datetime.now() + timedelta(minutes=5)
-        
         return True
     except requests.exceptions.ConnectionError as e:
         if not silent:
