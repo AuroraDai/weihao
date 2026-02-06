@@ -9,6 +9,7 @@ import time
 import hashlib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from streamlit_autorefresh import st_autorefresh
 
 load_dotenv()
 
@@ -455,8 +456,12 @@ if get_quote_btn and ticker:
     if fetch_quote_data(ticker.upper(), silent=False):
         st.rerun()
 
-# Auto-refresh logic - check if it's time to refresh
+# Auto-refresh logic using st_autorefresh (doesn't reload page, preserves session state)
 if st.session_state.auto_refresh_enabled and 'current_ticker' in st.session_state and st.session_state.current_ticker:
+    # Use st_autorefresh to check every 30 seconds if it's time to refresh (5 minutes)
+    count = st_autorefresh(interval=30*1000, key="data_autorefresh", limit=None)
+    
+    # Check if it's time to refresh (every 5 minutes)
     if st.session_state.next_refresh_time is None:
         # Initialize next refresh time
         st.session_state.next_refresh_time = datetime.now() + timedelta(minutes=5)
@@ -466,17 +471,6 @@ if st.session_state.auto_refresh_enabled and 'current_ticker' in st.session_stat
             # Reset next refresh time
             st.session_state.next_refresh_time = datetime.now() + timedelta(minutes=5)
             st.rerun()
-
-# Auto-refresh timer - use JavaScript to trigger refresh every 30 seconds to check
-if st.session_state.auto_refresh_enabled and 'current_ticker' in st.session_state and st.session_state.current_ticker:
-    # Add a hidden element that triggers rerun every 30 seconds
-    st.markdown("""
-    <script>
-    setTimeout(function(){
-        window.location.reload();
-    }, 30000);
-    </script>
-    """, unsafe_allow_html=True)
 
 # Display stored data
 if 'current_quote' in st.session_state and st.session_state.current_quote:

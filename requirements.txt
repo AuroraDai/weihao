@@ -1,5 +1,6 @@
 # Streamlit frontend requirements (calls FastAPI backend)
 streamlit
+streamlit-autorefresh
 requests
 python-dotenv
 pandas
