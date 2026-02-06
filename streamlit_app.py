@@ -330,10 +330,16 @@ if not st.session_state.authenticated:
                 # If "Remember me" is checked, save token to localStorage
                 if remember_me:
                     auth_token = generate_auth_token()
+                    timestamp_ms = int(datetime.now().timestamp() * 1000)
                     save_auth_js = f"""
                     <script>
-                    localStorage.setItem('finviz_auth_token', '{auth_token}');
-                    localStorage.setItem('finviz_auth_time', '{int(datetime.now().timestamp() * 1000)}');
+                    try {{
+                        localStorage.setItem('finviz_auth_token', '{auth_token}');
+                        localStorage.setItem('finviz_auth_time', '{timestamp_ms}');
+                        console.log('Auth token saved to localStorage');
+                    }} catch (e) {{
+                        console.error('Failed to save auth token:', e);
+                    }}
                     </script>
                     """
                     st.components.v1.html(save_auth_js, height=0)
