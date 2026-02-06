@@ -307,15 +307,13 @@ if not st.session_state.authenticated:
             if password == APP_PASSWORD:
                 st.session_state.authenticated = True
                 
-                # If "Remember me" is checked, save token to localStorage
+                # If "Remember me" is checked, save fixed token to localStorage
                 if remember_me:
                     auth_token = generate_auth_token()
-                    timestamp_ms = int(datetime.now().timestamp() * 1000)
                     save_auth_js = f"""
                     <script>
                     try {{
                         localStorage.setItem('finviz_auth_token', '{auth_token}');
-                        localStorage.setItem('finviz_auth_time', '{timestamp_ms}');
                         console.log('Auth token saved to localStorage');
                     }} catch (e) {{
                         console.error('Failed to save auth token:', e);
