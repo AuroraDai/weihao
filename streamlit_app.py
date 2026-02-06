@@ -226,6 +226,8 @@ st.markdown("""
 # Password is stored in Streamlit Secrets or environment variables
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+if 'cookie_checked' not in st.session_state:
+    st.session_state.cookie_checked = False
 
 # Initialize cookie manager using extra-streamlit-components
 # Note: Cannot use @st.cache_resource because CookieManager uses widgets internally
@@ -238,12 +240,21 @@ def generate_auth_token():
 
 # Check for saved authentication token in cookies (for "Remember this computer")
 # This runs before login check to auto-authenticate if cookie exists
-if not st.session_state.authenticated:
-    cookie_token = cookies.get('finviz_auth_token')
-    if cookie_token and cookie_token == generate_auth_token():
-        # Token matches, auto-authenticate
-        st.session_state.authenticated = True
-        st.rerun()
+# Only check once per session to avoid repeated widget calls
+if not st.session_state.authenticated and not st.session_state.cookie_checked:
+    st.session_state.cookie_checked = True
+    try:
+        cookie_token = cookies.get('finviz_auth_token')
+        if cookie_token:
+            if cookie_token == generate_auth_token():
+                # Token matches, auto-authenticate
+                st.session_state.authenticated = True
+                st.rerun()
+    except Exception as e:
+        # Cookie read error - silently continue to login page
+        # This can happen on first load or if cookies are disabled
+        # In Streamlit Cloud, CookieManager may need a rerun to initialize
+        pass
 
 # Initialize summary storage
 if 'summaries' not in st.session_state:
@@ -294,10 +305,21 @@ if not st.session_state.authenticated:
                 
                 # If "Remember me" is checked, save fixed token to cookie (30 days expiry)
                 if remember_me:
-                    auth_token = generate_auth_token()
-                    # Set cookie with 30 days expiry (max_age in seconds)
-                    expiry_seconds = 30 * 24 * 60 * 60  # 30 days
-                    cookies.set('finviz_auth_token', auth_token, max_age=expiry_seconds)
+                    try:
+                        auth_token = generate_auth_token()
+                        # Set cookie with 30 days expiry (max_age in seconds)
+                        expiry_seconds = 30 * 24 * 60 * 60  # 30 days
+                        # Use secure=True for HTTPS (Streamlit Cloud), same_site='lax' for cross-site compatibility
+                        cookies.set(
+                            'finviz_auth_token', 
+                            auth_token, 
+                            max_age=expiry_seconds,
+                            secure=True,  # Required for HTTPS (Streamlit Cloud)
+                            same_site='lax'  # Allows cookie to work across same-site navigations
+                        )
+                    except Exception as e:
+                        # Cookie set error - log but don't block login
+                        st.warning(f"⚠️ 无法保存登录状态: {str(e)}")
                 
                 st.rerun()
             else:
@@ -558,8 +580,13 @@ with st.sidebar:
     # Logout button
     if st.button("🚪 退出登录", key="logout", use_container_width=True):
         st.session_state.authenticated = False
+        st.session_state.cookie_checked = False  # Reset to allow cookie check on next load
         # Clear saved authentication token from cookie
-        cookies.delete('finviz_auth_token', key='delete_auth_cookie')
+        try:
+            cookies.delete('finviz_auth_token', key='delete_auth_cookie')
+        except Exception:
+            # Cookie delete error - continue anyway
+            pass
         st.rerun()
     
     st.markdown("---")
