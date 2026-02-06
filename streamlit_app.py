@@ -6,11 +6,9 @@ import streamlit as st
 import requests
 import os
 import time
-import hashlib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
-import extra_streamlit_components as stx
 
 load_dotenv()
 
@@ -28,7 +26,6 @@ def get_secret(key: str, default: str = "") -> str:
     return default
 
 API_BASE = get_secret("API_BASE", "http://localhost:8000")
-APP_PASSWORD = get_secret("VITE_APP_PASSWORD", "daiweihao1990")
 
 # Page config
 st.set_page_config(
@@ -222,40 +219,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Password protection using server-side session_state + cookies for "Remember this computer"
-# Password is stored in Streamlit Secrets or environment variables
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'cookie_checked' not in st.session_state:
-    st.session_state.cookie_checked = False
-
-# Initialize cookie manager using extra-streamlit-components
-# Note: Cannot use @st.cache_resource because CookieManager uses widgets internally
-cookies = stx.CookieManager()
-
-# Generate a fixed auth token (hash of password only - same every time)
-def generate_auth_token():
-    """Generate a fixed auth token based on password"""
-    return hashlib.md5(APP_PASSWORD.encode()).hexdigest()[:16]
-
-# Check for saved authentication token in cookies (for "Remember this computer")
-# This runs before login check to auto-authenticate if cookie exists
-# Only check once per session to avoid repeated widget calls
-if not st.session_state.authenticated and not st.session_state.cookie_checked:
-    st.session_state.cookie_checked = True
-    try:
-        cookie_token = cookies.get('finviz_auth_token')
-        if cookie_token:
-            if cookie_token == generate_auth_token():
-                # Token matches, auto-authenticate
-                st.session_state.authenticated = True
-                st.rerun()
-    except Exception as e:
-        # Cookie read error - silently continue to login page
-        # This can happen on first load or if cookies are disabled
-        # In Streamlit Cloud, CookieManager may need a rerun to initialize
-        pass
-
 # Initialize summary storage
 if 'summaries' not in st.session_state:
     st.session_state.summaries = {}
@@ -278,56 +241,7 @@ if 'current_chart_url' not in st.session_state:
 if 'ticker_input' not in st.session_state:
     st.session_state.ticker_input = ""  # Empty default
 
-if not st.session_state.authenticated:
-    # Beautiful login page
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown("""
-        <div style='text-align: center; padding: 2rem; background: linear-gradient(135deg, #111827, #1e293b); 
-                    border-radius: 20px; border: 1px solid #334155; box-shadow: 0 20px 60px rgba(0,0,0,0.5);'>
-            <h1 style='margin-bottom: 0.5rem;'>🔒</h1>
-            <h2 style='color: #f1f5f9; margin-bottom: 0.5rem;'>访问受限</h2>
-            <p style='color: #94a3b8;'>请输入密码以访问 Finviz 交易仪表板</p>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        password = st.text_input("密码", type="password", key="password_input", label_visibility="collapsed")
-        
-        # "Remember this computer" checkbox
-        remember_me = st.checkbox("💾 记住此电脑（30天内免登录）", value=False, key="remember_me")
-        
-        if st.button("登录", type="primary", use_container_width=True):
-            # Server-side password verification
-            if password == APP_PASSWORD:
-                st.session_state.authenticated = True
-                
-                # If "Remember me" is checked, save fixed token to cookie (30 days expiry)
-                if remember_me:
-                    try:
-                        auth_token = generate_auth_token()
-                        # Set cookie with 30 days expiry (max_age in seconds)
-                        expiry_seconds = 30 * 24 * 60 * 60  # 30 days
-                        # Use secure=True for HTTPS (Streamlit Cloud), same_site='lax' for cross-site compatibility
-                        cookies.set(
-                            'finviz_auth_token', 
-                            auth_token, 
-                            max_age=expiry_seconds,
-                            secure=True,  # Required for HTTPS (Streamlit Cloud)
-                            same_site='lax'  # Allows cookie to work across same-site navigations
-                        )
-                    except Exception as e:
-                        # Cookie set error - log but don't block login
-                        st.warning(f"⚠️ 无法保存登录状态: {str(e)}")
-                
-                st.rerun()
-            else:
-                st.error("❌ 密码错误，请重试")
-    
-    st.stop()
-
-# Main app content - title removed
+# Main app content
 
 # Function to fetch and update data
 def fetch_quote_data(ticker_symbol: str, silent: bool = False):
@@ -573,23 +487,9 @@ if 'current_quote' in st.session_state and st.session_state.current_quote:
                                 except Exception as e:
                                     st.error(f"❌ Failed to get summary: {str(e)}")
 
-# Sidebar with settings, logout, and auto-refresh
+# Sidebar with settings and auto-refresh
 with st.sidebar:
     st.header("⚙️ 设置")
-    
-    # Logout button
-    if st.button("🚪 退出登录", key="logout", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.cookie_checked = False  # Reset to allow cookie check on next load
-        # Clear saved authentication token from cookie
-        try:
-            cookies.delete('finviz_auth_token', key='delete_auth_cookie')
-        except Exception:
-            # Cookie delete error - continue anyway
-            pass
-        st.rerun()
-    
-    st.markdown("---")
     
     # Auto-refresh toggle
     auto_refresh = st.checkbox("🔄 自动刷新 (5分钟)", value=st.session_state.auto_refresh_enabled, key="auto_refresh_checkbox")
