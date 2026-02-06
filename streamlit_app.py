@@ -10,6 +10,7 @@ import hashlib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
+import extra_streamlit_components as stx
 
 load_dotenv()
 
@@ -221,43 +222,27 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Password protection with "Remember this computer" feature
+# Password protection using server-side session_state + cookies for "Remember this computer"
+# Password is stored in Streamlit Secrets or environment variables
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+
+# Initialize cookie manager using extra-streamlit-components
+# Note: Cannot use @st.cache_resource because CookieManager uses widgets internally
+cookies = stx.CookieManager()
 
 # Generate a fixed auth token (hash of password only - same every time)
 def generate_auth_token():
     """Generate a fixed auth token based on password"""
     return hashlib.md5(APP_PASSWORD.encode()).hexdigest()[:16]
 
-# Check for saved authentication token in browser localStorage at the very top
-# This runs before any other logic to ensure immediate redirect
-check_auth_js = """
-<script>
-(function() {
-    try {
-        const token = localStorage.getItem('finviz_auth_token');
-        if (token && window.location.search.indexOf('auth_token=') === -1) {
-            const url = window.location.href.split('?')[0];
-            window.location.replace(url + '?auth_token=' + token);
-        }
-    } catch(e) {
-        console.error('Auth check error:', e);
-    }
-})();
-</script>
-"""
-st.markdown(check_auth_js, unsafe_allow_html=True)
-
-# Check URL parameters for auth token
-query_params = st.query_params
-if 'auth_token' in query_params:
-    token = query_params['auth_token']
-    # Verify token matches the fixed token
-    if token == generate_auth_token():
+# Check for saved authentication token in cookies (for "Remember this computer")
+# This runs before login check to auto-authenticate if cookie exists
+if not st.session_state.authenticated:
+    cookie_token = cookies.get('finviz_auth_token')
+    if cookie_token and cookie_token == generate_auth_token():
+        # Token matches, auto-authenticate
         st.session_state.authenticated = True
-        # Remove token from URL for security
-        st.query_params.clear()
         st.rerun()
 
 # Initialize summary storage
@@ -303,23 +288,16 @@ if not st.session_state.authenticated:
         remember_me = st.checkbox("💾 记住此电脑（30天内免登录）", value=False, key="remember_me")
         
         if st.button("登录", type="primary", use_container_width=True):
+            # Server-side password verification
             if password == APP_PASSWORD:
                 st.session_state.authenticated = True
                 
-                # If "Remember me" is checked, save fixed token to localStorage
+                # If "Remember me" is checked, save fixed token to cookie (30 days expiry)
                 if remember_me:
                     auth_token = generate_auth_token()
-                    save_auth_js = f"""
-                    <script>
-                    try {{
-                        localStorage.setItem('finviz_auth_token', '{auth_token}');
-                        console.log('Auth token saved to localStorage');
-                    }} catch (e) {{
-                        console.error('Failed to save auth token:', e);
-                    }}
-                    </script>
-                    """
-                    st.components.v1.html(save_auth_js, height=0)
+                    # Set cookie with 30 days expiry (max_age in seconds)
+                    expiry_seconds = 30 * 24 * 60 * 60  # 30 days
+                    cookies.set('finviz_auth_token', auth_token, max_age=expiry_seconds)
                 
                 st.rerun()
             else:
@@ -580,13 +558,8 @@ with st.sidebar:
     # Logout button
     if st.button("🚪 退出登录", key="logout", use_container_width=True):
         st.session_state.authenticated = False
-        # Clear saved authentication token from browser
-        clear_auth_js = """
-        <script>
-        localStorage.removeItem('finviz_auth_token');
-        </script>
-        """
-        st.components.v1.html(clear_auth_js, height=0)
+        # Clear saved authentication token from cookie
+        cookies.delete('finviz_auth_token', key='delete_auth_cookie')
         st.rerun()
     
     st.markdown("---")
@@ -612,40 +585,3 @@ with st.sidebar:
     if st.session_state.auto_refresh_enabled:
         st.caption("⏳ 下次刷新: 5 分钟后")
     
-    st.markdown("---")
-    
-    # Backend health check
-    st.subheader("🔧 Backend")
-    
-    # Show API_BASE with warning if localhost
-    if "localhost" in API_BASE or "127.0.0.1" in API_BASE:
-        st.warning(f"⚠️ API: `{API_BASE}`\n\n在 Streamlit Cloud 上需要配置真实的后端 URL")
-        st.info("""
-        **配置步骤**:
-        1. 在 Settings → Secrets 中添加：
-        ```toml
-        [secrets]
-        API_BASE = "https://your-backend-url.com"
-        ```
-        2. 重新部署应用
-        """)
-    else:
-        st.caption(f"API: `{API_BASE}`")
-    
-    if st.button("🏥 Check Backend Health", use_container_width=True):
-        try:
-            response = requests.get(f"{API_BASE}/health", timeout=5)
-            if response.status_code == 200:
-                st.success("✅ Backend is healthy")
-            else:
-                st.warning(f"⚠️ Backend returned: {response.status_code}")
-        except requests.exceptions.ConnectionError:
-            if "localhost" in API_BASE or "127.0.0.1" in API_BASE:
-                st.error("❌ 无法连接到 localhost\n\n在 Streamlit Cloud 上必须使用真实的后端 URL")
-            else:
-                st.error(f"❌ Backend unreachable: {API_BASE}\n\n请检查后端是否运行")
-        except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
-    
-    st.markdown("---")
-    st.caption("💡 Tip: Make sure FastAPI backend is running for full functionality")
