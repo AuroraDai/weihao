@@ -224,68 +224,40 @@ st.markdown("""
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# Generate a simple auth token (hash of password + timestamp)
+# Generate a fixed auth token (hash of password only - same every time)
 def generate_auth_token():
-    """Generate a simple auth token"""
-    timestamp = str(int(datetime.now().timestamp()))
-    token_string = APP_PASSWORD + timestamp
-    return hashlib.md5(token_string.encode()).hexdigest()[:16]
+    """Generate a fixed auth token based on password"""
+    return hashlib.md5(APP_PASSWORD.encode()).hexdigest()[:16]
 
-# Check URL parameters for auth token FIRST (before checking localStorage)
+# Check for saved authentication token in browser localStorage at the very top
+# This runs before any other logic to ensure immediate redirect
+check_auth_js = """
+<script>
+(function() {
+    try {
+        const token = localStorage.getItem('finviz_auth_token');
+        if (token && window.location.search.indexOf('auth_token=') === -1) {
+            const url = window.location.href.split('?')[0];
+            window.location.replace(url + '?auth_token=' + token);
+        }
+    } catch(e) {
+        console.error('Auth check error:', e);
+    }
+})();
+</script>
+"""
+st.markdown(check_auth_js, unsafe_allow_html=True)
+
+# Check URL parameters for auth token
 query_params = st.query_params
 if 'auth_token' in query_params:
-    # Token is passed via URL, verify it's valid format
     token = query_params['auth_token']
-    # Simple validation: token should be 16 hex characters
-    if len(token) == 16 and all(c in '0123456789abcdef' for c in token):
+    # Verify token matches the fixed token
+    if token == generate_auth_token():
         st.session_state.authenticated = True
         # Remove token from URL for security
         st.query_params.clear()
         st.rerun()
-
-# Check for saved authentication token in browser localStorage
-# This runs on every page load if not authenticated and no token in URL
-# Use st.markdown with unsafe_allow_html to ensure JavaScript executes early
-if not st.session_state.authenticated and 'auth_token' not in query_params:
-    # Inject JavaScript at the very top of the page to check localStorage
-    auth_check_js = """
-    <script>
-    // Execute immediately when script loads
-    (function() {
-        try {
-            // Only run if we don't already have auth_token in URL
-            if (window.location.search.indexOf('auth_token=') === -1) {
-                const savedAuth = localStorage.getItem('finviz_auth_token');
-                const savedTime = localStorage.getItem('finviz_auth_time');
-                
-                if (savedAuth && savedTime) {
-                    // Check if token is still valid (30 days)
-                    const now = Date.now();
-                    const saved = parseInt(savedTime);
-                    if (!isNaN(saved)) {
-                        const daysDiff = (now - saved) / (1000 * 60 * 60 * 24);
-                        if (daysDiff < 30) {
-                            // Token is valid, redirect with token in URL immediately
-                            const currentUrl = window.location.href.split('?')[0];
-                            const separator = currentUrl.includes('?') ? '&' : '?';
-                            window.location.replace(currentUrl + separator + 'auth_token=' + savedAuth);
-                            return;
-                        } else {
-                            // Token expired, remove it
-                            localStorage.removeItem('finviz_auth_token');
-                            localStorage.removeItem('finviz_auth_time');
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            console.error('Auth check error:', e);
-        }
-    })();
-    </script>
-    """
-    # Use st.markdown to inject script at the top of the page
-    st.markdown(auth_check_js, unsafe_allow_html=True)
 
 # Initialize summary storage
 if 'summaries' not in st.session_state:
@@ -633,7 +605,6 @@ with st.sidebar:
         clear_auth_js = """
         <script>
         localStorage.removeItem('finviz_auth_token');
-        localStorage.removeItem('finviz_auth_time');
         </script>
         """
         st.components.v1.html(clear_auth_js, height=0)
