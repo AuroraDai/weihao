@@ -608,12 +608,9 @@ with st.sidebar:
             time_str = f"{int(time_diff.total_seconds() / 3600)}小时前"
         st.caption(f"⏰ 最后更新: {time_str}")
     
-    # Show next refresh time if auto-refresh is enabled
-    if st.session_state.auto_refresh_enabled and st.session_state.next_refresh_time:
-        time_until = st.session_state.next_refresh_time - datetime.now()
-        if time_until.total_seconds() > 0:
-            mins = int(time_until.total_seconds() / 60)
-            st.caption(f"⏳ 下次刷新: {mins} 分钟后")
+    # Show next refresh info if auto-refresh is enabled
+    if st.session_state.auto_refresh_enabled:
+        st.caption("⏳ 下次刷新: 5 分钟后")
     
     st.markdown("---")
     
