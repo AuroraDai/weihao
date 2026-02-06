@@ -6,6 +6,7 @@ import streamlit as st
 import requests
 import os
 import time
+import hashlib
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -219,9 +220,62 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Password protection
+# Password protection with "Remember this computer" feature
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+
+# Check for saved authentication token in browser localStorage
+def check_saved_auth():
+    """Check if user has saved authentication in browser"""
+    # Use JavaScript to check localStorage
+    auth_check_js = """
+    <script>
+    (function() {
+        const savedAuth = localStorage.getItem('finviz_auth_token');
+        const savedTime = localStorage.getItem('finviz_auth_time');
+        if (savedAuth && savedTime) {
+            // Check if token is still valid (30 days)
+            const now = Date.now();
+            const saved = parseInt(savedTime);
+            const daysDiff = (now - saved) / (1000 * 60 * 60 * 24);
+            if (daysDiff < 30) {
+                // Token is valid, set URL parameter to trigger authentication
+                if (window.location.search.indexOf('auth_token=') === -1) {
+                    window.location.href = window.location.pathname + '?auth_token=' + savedAuth;
+                }
+            } else {
+                // Token expired, remove it
+                localStorage.removeItem('finviz_auth_token');
+                localStorage.removeItem('finviz_auth_time');
+            }
+        }
+    })();
+    </script>
+    """
+    st.components.v1.html(auth_check_js, height=0)
+
+# Generate a simple auth token (hash of password + timestamp)
+def generate_auth_token():
+    """Generate a simple auth token"""
+    timestamp = str(int(datetime.now().timestamp()))
+    token_string = APP_PASSWORD + timestamp
+    return hashlib.md5(token_string.encode()).hexdigest()[:16]
+
+# Check URL parameters for auth token
+query_params = st.query_params
+if 'auth_token' in query_params:
+    # Token is passed via URL, verify it's valid format
+    token = query_params['auth_token']
+    # Simple validation: token should be 16 hex characters
+    if len(token) == 16 and all(c in '0123456789abcdef' for c in token):
+        st.session_state.authenticated = True
+        # Remove token from URL for security
+        st.query_params.clear()
+        st.rerun()
+
+# Check saved auth on first load
+if not st.session_state.authenticated:
+    check_saved_auth()
 
 # Initialize summary storage
 if 'summaries' not in st.session_state:
@@ -264,9 +318,24 @@ if not st.session_state.authenticated:
         
         password = st.text_input("密码", type="password", key="password_input", label_visibility="collapsed")
         
+        # "Remember this computer" checkbox
+        remember_me = st.checkbox("💾 记住此电脑（30天内免登录）", value=False, key="remember_me")
+        
         if st.button("登录", type="primary", use_container_width=True):
             if password == APP_PASSWORD:
                 st.session_state.authenticated = True
+                
+                # If "Remember me" is checked, save token to localStorage
+                if remember_me:
+                    auth_token = generate_auth_token()
+                    save_auth_js = f"""
+                    <script>
+                    localStorage.setItem('finviz_auth_token', '{auth_token}');
+                    localStorage.setItem('finviz_auth_time', '{int(datetime.now().timestamp() * 1000)}');
+                    </script>
+                    """
+                    st.components.v1.html(save_auth_js, height=0)
+                
                 st.rerun()
             else:
                 st.error("❌ 密码错误，请重试")
@@ -544,6 +613,14 @@ with st.sidebar:
     # Logout button
     if st.button("🚪 退出登录", key="logout", use_container_width=True):
         st.session_state.authenticated = False
+        # Clear saved authentication token from browser
+        clear_auth_js = """
+        <script>
+        localStorage.removeItem('finviz_auth_token');
+        localStorage.removeItem('finviz_auth_time');
+        </script>
+        """
+        st.components.v1.html(clear_auth_js, height=0)
         st.rerun()
     
     st.markdown("---")
