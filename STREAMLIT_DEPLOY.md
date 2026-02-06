@@ -30,7 +30,7 @@
 4. 分支：`main`
 5. **Main file path**: `streamlit_app.py`
 
-### 3. 配置环境变量
+### 3. 配置环境变量（**重要！**）
 
 在 Streamlit Cloud 的 "Settings" → "Secrets" 中添加：
 
@@ -40,9 +40,15 @@ API_BASE = "https://your-backend.onrender.com"
 VITE_APP_PASSWORD = "daiweihao1990"
 ```
 
-**重要**：
-- `API_BASE` 必须是你部署的 FastAPI 后端 URL
-- 不要使用 `http://localhost:8000`（这在 Streamlit Cloud 上不可用）
+**⚠️ 重要提示**：
+- `API_BASE` **必须**是你部署的 FastAPI 后端 URL（例如：`https://your-backend.onrender.com`）
+- **不要使用** `http://localhost:8000`（这在 Streamlit Cloud 上不可用）
+- 如果未配置 `API_BASE`，应用会默认使用 `localhost:8000`，导致连接错误
+
+**如何获取后端 URL**：
+1. 在 Render/Railway/Heroku 等平台部署 FastAPI 后端
+2. 获取后端服务的公开 URL（例如：`https://finviz-api.onrender.com`）
+3. 将这个 URL 设置为 `API_BASE` 的值（**不要**包含路径，只要基础 URL）
 
 ### 4. 本地测试
 

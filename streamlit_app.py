@@ -279,6 +279,32 @@ if not st.session_state.authenticated:
 def fetch_quote_data(ticker_symbol: str, silent: bool = False):
     """Fetch quote data from API and update session state"""
     try:
+        # Check if API_BASE is configured correctly
+        if API_BASE == "http://localhost:8000":
+            # Check if we're running on Streamlit Cloud (not localhost)
+            import socket
+            try:
+                # Try to resolve localhost - if it fails, we're probably on Streamlit Cloud
+                socket.gethostbyname('localhost')
+            except:
+                if not silent:
+                    st.error("""
+                    ⚠️ **配置错误**: 无法连接到后端 API
+                    
+                    **在 Streamlit Cloud 上部署时，需要配置后端 URL：**
+                    
+                    1. 在 Streamlit Cloud 的 Settings → Secrets 中添加：
+                    ```toml
+                    [secrets]
+                    API_BASE = "https://your-backend-url.com"
+                    ```
+                    
+                    2. 确保 FastAPI 后端已部署并运行
+                    
+                    3. 检查后端 URL 是否正确（不要使用 localhost）
+                    """)
+                return False
+        
         if not silent:
             with st.spinner("⏳ Fetching data from FastAPI backend..."):
                 response = requests.get(f"{API_BASE}/quote/{ticker_symbol.upper()}", timeout=30)
@@ -301,6 +327,45 @@ def fetch_quote_data(ticker_symbol: str, silent: bool = False):
             st.session_state.next_refresh_time = datetime.now() + timedelta(minutes=5)
         
         return True
+    except requests.exceptions.ConnectionError as e:
+        if not silent:
+            error_msg = str(e)
+            if "localhost" in API_BASE or "127.0.0.1" in API_BASE:
+                st.error(f"""
+                ❌ **连接失败**: 无法连接到后端 API
+                
+                **当前配置**: `{API_BASE}`
+                
+                **问题**: 在 Streamlit Cloud 上无法使用 `localhost` 或 `127.0.0.1`
+                
+                **解决方案**:
+                1. 在 Streamlit Cloud Settings → Secrets 中配置：
+                ```toml
+                [secrets]
+                API_BASE = "https://your-backend-url.com"
+                ```
+                
+                2. 确保后端已部署（例如 Render, Railway, Heroku）
+                
+                3. 测试后端是否可访问：`curl https://your-backend-url.com/health`
+                """)
+            else:
+                st.error(f"""
+                ❌ **连接失败**: 无法连接到后端 API
+                
+                **当前配置**: `{API_BASE}`
+                
+                **可能的原因**:
+                1. 后端服务未运行或已停止
+                2. URL 配置错误
+                3. 网络连接问题
+                
+                **请检查**:
+                - 后端服务状态
+                - API URL 是否正确
+                - 后端是否允许来自 Streamlit Cloud 的请求（CORS）
+                """)
+        return False
     except Exception as e:
         if not silent:
             st.error(f"❌ Error fetching data: {str(e)}")
@@ -513,7 +578,21 @@ with st.sidebar:
     
     # Backend health check
     st.subheader("🔧 Backend")
-    st.caption(f"API: `{API_BASE}`")
+    
+    # Show API_BASE with warning if localhost
+    if "localhost" in API_BASE or "127.0.0.1" in API_BASE:
+        st.warning(f"⚠️ API: `{API_BASE}`\n\n在 Streamlit Cloud 上需要配置真实的后端 URL")
+        st.info("""
+        **配置步骤**:
+        1. 在 Settings → Secrets 中添加：
+        ```toml
+        [secrets]
+        API_BASE = "https://your-backend-url.com"
+        ```
+        2. 重新部署应用
+        """)
+    else:
+        st.caption(f"API: `{API_BASE}`")
     
     if st.button("🏥 Check Backend Health", use_container_width=True):
         try:
@@ -522,8 +601,13 @@ with st.sidebar:
                 st.success("✅ Backend is healthy")
             else:
                 st.warning(f"⚠️ Backend returned: {response.status_code}")
+        except requests.exceptions.ConnectionError:
+            if "localhost" in API_BASE or "127.0.0.1" in API_BASE:
+                st.error("❌ 无法连接到 localhost\n\n在 Streamlit Cloud 上必须使用真实的后端 URL")
+            else:
+                st.error(f"❌ Backend unreachable: {API_BASE}\n\n请检查后端是否运行")
         except Exception as e:
-            st.error(f"❌ Backend unreachable: {str(e)}")
+            st.error(f"❌ Error: {str(e)}")
     
     st.markdown("---")
     st.caption("💡 Tip: Make sure FastAPI backend is running for full functionality")
