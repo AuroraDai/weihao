@@ -2,7 +2,8 @@ import csv
 import io
 import os
 import re
-from typing import Optional
+from typing import Optional, List, Dict
+from datetime import datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
@@ -15,6 +16,7 @@ import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 from nltk.corpus import stopwords
 from collections import defaultdict
+
 
 load_dotenv()
 
@@ -91,6 +93,481 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/market/overview")
+def get_market_overview() -> dict:
+    """
+    Get market overview data including:
+    - Trading session (Pre / Regular / After)
+    - Major indices status (SPY / QQQ / DIA)
+    - VIX (fear index)
+    - Advance/Decline ratio
+    """
+    try:
+        import datetime
+        
+        # Get current time in EST (Eastern Time)
+        from datetime import timezone, timedelta
+        est = timezone(timedelta(hours=-5))  # EST is UTC-5
+        now = datetime.datetime.now(est)
+        current_hour = now.hour
+        current_minute = now.minute
+        weekday = now.weekday()  # 0 = Monday, 6 = Sunday
+        
+        # Determine trading session (EST timezone)
+        # Pre-market: 4:00 AM - 9:30 AM EST (weekdays only)
+        # Regular: 9:30 AM - 4:00 PM EST (weekdays only)
+        # After-hours: 4:00 PM - 8:00 PM EST (weekdays only)
+        # Closed: weekends or outside trading hours
+        if weekday >= 5:  # Saturday or Sunday
+            session = "Closed"
+        elif 4 <= current_hour < 9 or (current_hour == 9 and current_minute < 30):
+            session = "Pre"
+        elif (current_hour == 9 and current_minute >= 30) or (9 < current_hour < 16):
+            session = "Regular"
+        elif 16 <= current_hour < 20:
+            session = "After"
+        else:
+            session = "Closed"
+        
+        # Get major indices data
+        indices_data = {}
+        for ticker in ["SPY", "QQQ", "DIA"]:
+            try:
+                quote = finvizfinance(ticker)
+                quote_data = quote.ticker_fundament()
+                price = quote_data.get("Price", "N/A")
+                change = quote_data.get("Change", "N/A")
+                change_pct = quote_data.get("Change %", "N/A")
+                indices_data[ticker] = {
+                    "price": price,
+                    "change": change,
+                    "change_pct": change_pct
+                }
+            except Exception:
+                indices_data[ticker] = {"price": "N/A", "change": "N/A", "change_pct": "N/A"}
+        
+        # Get VIX data
+        vix_data = {}
+        try:
+            vix_quote = finvizfinance("VIX")
+            vix_fundament = vix_quote.ticker_fundament()
+            vix_data = {
+                "value": vix_fundament.get("Price", "N/A"),
+                "change": vix_fundament.get("Change", "N/A"),
+                "change_pct": vix_fundament.get("Change %", "N/A")
+            }
+        except Exception:
+            vix_data = {"value": "N/A", "change": "N/A", "change_pct": "N/A"}
+        
+        # Get advance/decline ratio
+        # Try to get from NYSE/NASDAQ data via Finviz screener or use a proxy
+        adv_decl_ratio = "N/A"
+        adv_count = "N/A"
+        decl_count = "N/A"
+        try:
+            # Get market-wide data from Finviz (simplified approach)
+            # In production, you'd use a dedicated market data API
+            # For now, we'll calculate a proxy based on major indices
+            spy_data = indices_data.get("SPY", {})
+            qqq_data = indices_data.get("QQQ", {})
+            dia_data = indices_data.get("DIA", {})
+            
+            # Count how many indices are up vs down
+            up_count = 0
+            down_count = 0
+            for idx_data in [spy_data, qqq_data, dia_data]:
+                change_pct = idx_data.get("change_pct", "")
+                if change_pct and change_pct != "N/A":
+                    if change_pct.startswith("+"):
+                        up_count += 1
+                    elif change_pct.startswith("-"):
+                        down_count += 1
+            
+            if up_count + down_count > 0:
+                adv_decl_ratio = f"{up_count}:{down_count}"
+                adv_count = str(up_count)
+                decl_count = str(down_count)
+        except Exception:
+            pass
+        
+        return {
+            "session": session,
+            "indices": indices_data,
+            "vix": vix_data,
+            "adv_decl": {
+                "ratio": adv_decl_ratio,
+                "advance": adv_count,
+                "decline": decl_count
+            },
+            "timestamp": now.isoformat()
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch market overview: {exc}",
+        ) from exc
+
+
+# Fallback ticker list for watchlist when screener data is unavailable
+WATCHLIST_FALLBACK_TICKERS = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "SMCI",
+    "PLTR", "COIN", "MSTR", "GME", "AMC", "SPY", "QQQ", "DIA", "IWM", "VIX",
+    "SOXL", "TQQQ", "SQQQ", "SPXL", "SPXS", "FNGU", "FNGD",
+    "ARKK", "ARKQ", "ARKW", "ARKG", "ARKF", "BABA", "JD", "PDD", "NIO", "XPEV",
+    "RIVN", "LCID", "F", "GM", "RBLX", "HOOD", "SOFI", "AFRM", "UPST", "PYPL"
+]
+
+@app.get("/watchlist")
+def get_watchlist(limit: Optional[int] = 20) -> dict:
+    """
+    Get smart watchlist - automatically filtered stocks worth watching.
+    Criteria for inclusion:
+    - Volume > 2x average
+    - Recent news (24h)
+    - Price change > 3%
+    - High volatility
+    """
+    try:
+        # Try to get stocks from Finviz screener export (full market scan)
+        # If not available, fall back to predefined list
+        export_url = os.getenv("FINVIZ_EXPORT_URL")
+        candidate_tickers = []
+        
+        if export_url:
+            try:
+                # Get full market data from Finviz screener
+                response = requests.get(export_url, timeout=15)
+                response.raise_for_status()
+                reader = csv.DictReader(io.StringIO(response.text))
+                all_stocks = list(reader)
+                
+                # Extract tickers from screener data (limit to first 200 for performance)
+                for stock in all_stocks[:200]:
+                    ticker = stock.get("Ticker", "").strip()
+                    if ticker and len(ticker) <= 5:  # Valid ticker format
+                        candidate_tickers.append(ticker)
+                
+                print(f"Using screener data: {len(candidate_tickers)} tickers found")
+            except Exception as e:
+                print(f"Failed to fetch screener data: {e}, using fallback list")
+                # Fall back to predefined list if screener fails
+                candidate_tickers = WATCHLIST_FALLBACK_TICKERS.copy()
+        else:
+            # No FINVIZ_EXPORT_URL configured, use predefined list
+            candidate_tickers = WATCHLIST_FALLBACK_TICKERS.copy()
+            print(f"Using predefined list: {len(candidate_tickers)} tickers")
+        
+        watchlist_items = []
+        now = datetime.now()
+        
+        # Analyze each stock for watchlist criteria
+        # Limit processing to avoid timeout (process up to 100 stocks or until we have enough results)
+        max_to_process = min(100, len(candidate_tickers))
+        for ticker in candidate_tickers[:max_to_process]:
+            # Skip if we already have enough items
+            if len(watchlist_items) >= limit:
+                break
+            
+            try:
+                # Get detailed quote data
+                quote = finvizfinance(ticker)
+                quote_data = quote.ticker_fundament()
+                
+                # Get news (may fail, so make it optional)
+                news_raw = None
+                news_count = 0
+                try:
+                    news_raw = quote.ticker_news()
+                except Exception:
+                    pass  # News is optional
+                
+                # Calculate score and reasons
+                score = 0
+                reasons = []
+                
+                # 1. Check price change
+                change_pct_str = quote_data.get("Change %", "0%")
+                try:
+                    change_pct = float(change_pct_str.replace("%", "").replace("+", ""))
+                    if abs(change_pct) > 3:
+                        score += 2
+                        reasons.append(f"价格变化 {change_pct_str}")
+                except:
+                    pass
+                
+                # 2. Check volume (if available)
+                volume_str = quote_data.get("Volume", "")
+                avg_volume_str = quote_data.get("Avg Volume", "")
+                volume_ratio = 0.0
+                try:
+                    if volume_str and avg_volume_str:
+                        volume = float(str(volume_str).replace(",", ""))
+                        avg_volume = float(str(avg_volume_str).replace(",", ""))
+                        if avg_volume > 0:
+                            volume_ratio = volume / avg_volume
+                            if volume_ratio > 2:
+                                score += 3
+                                reasons.append("成交量异常")
+                except:
+                    pass
+                
+                # 3. Check recent news (last 24 hours) - optional
+                last_catalyst_time = None
+                event_types = []
+                if news_raw is not None:
+                    try:
+                        if hasattr(news_raw, "to_dict"):
+                            news_list = news_raw.to_dict(orient="records")
+                        else:
+                            news_list = news_raw if isinstance(news_raw, list) else []
+                        
+                        # Parse news dates and categorize events
+                        # datetime and timedelta are already imported at the top of the file
+                        # Use the outer scope 'now' variable or create a new one for news parsing
+                        news_now = datetime.now()
+                        one_day_ago = news_now - timedelta(days=1)
+                        
+                        for news_item in news_list[:20]:  # Check more news items
+                            if isinstance(news_item, dict):
+                                news_date_str = news_item.get("Date", "") or news_item.get("date", "")
+                                news_title = news_item.get("Title", "") or news_item.get("title", "") or ""
+                                
+                                # Count news in last 24h
+                                if news_date_str:
+                                    try:
+                                        # Try to parse date (format may vary)
+                                        if 'T' in news_date_str or ' ' in news_date_str:
+                                            news_date = datetime.fromisoformat(news_date_str.replace('Z', '+00:00').replace(' ', 'T'))
+                                        else:
+                                            # Try other formats
+                                            news_date = datetime.strptime(news_date_str, "%Y-%m-%d")
+                                        
+                                        if news_date >= one_day_ago:
+                                            news_count += 1
+                                            # Track most recent catalyst time
+                                            if last_catalyst_time is None or news_date > last_catalyst_time:
+                                                last_catalyst_time = news_date
+                                            
+                                            # Simple AI-like event classification based on keywords
+                                            title_lower = news_title.lower()
+                                            if any(word in title_lower for word in ['earnings', '财报', 'q1', 'q2', 'q3', 'q4', 'results']):
+                                                if 'earnings' not in event_types:
+                                                    event_types.append('earnings')
+                                            elif any(word in title_lower for word in ['fda', 'approval', '批准', 'approve']):
+                                                if 'fda' not in event_types:
+                                                    event_types.append('fda')
+                                            elif any(word in title_lower for word in ['merger', 'acquisition', '收购', '并购', 'm&a']):
+                                                if 'm&a' not in event_types:
+                                                    event_types.append('m&a')
+                                            elif any(word in title_lower for word in ['partnership', '合作', 'deal', 'agreement']):
+                                                if 'partnership' not in event_types:
+                                                    event_types.append('partnership')
+                                            elif any(word in title_lower for word in ['lawsuit', '诉讼', 'legal', 'court']):
+                                                if 'legal' not in event_types:
+                                                    event_types.append('legal')
+                                            elif any(word in title_lower for word in ['upgrade', 'downgrade', 'rating', '评级', 'upgrade']):
+                                                if 'rating' not in event_types:
+                                                    event_types.append('rating')
+                                    except:
+                                        # If date parsing fails, still count it
+                                        news_count += 1
+                                        if last_catalyst_time is None:
+                                            last_catalyst_time = news_now  # Use current time as fallback
+                                else:
+                                    # No date, but has title - count it
+                                    news_count += 1
+                        
+                        if news_count >= 2:
+                            score += 2
+                            reasons.append(f"📰{news_count}条新闻")
+                    except Exception:
+                        pass  # News check failed, continue
+                
+                # 4. Check volatility (if available)
+                volatility_str = quote_data.get("Volatility", "")
+                try:
+                    if volatility_str:
+                        volatility = float(str(volatility_str).replace("%", ""))
+                        if volatility > 30:
+                            score += 1
+                            reasons.append("高波动")
+                except:
+                    pass
+                
+                # Only include if score >= 2 (lower threshold to get more results)
+                # Score >= 2 means at least one criterion is met
+                if score >= 2:
+                    price = quote_data.get("Price", "N/A")
+                    change = quote_data.get("Change", "0")
+                    change_pct = quote_data.get("Change %", "0%")
+                    
+                    # Risk assessment - automatically generate risk flags
+                    risk_flags = []
+                    risk_level = "low"
+                    
+                    # 1. 高 IV (High Implied Volatility)
+                    volatility_str = quote_data.get("Volatility", "")
+                    try:
+                        if volatility_str:
+                            volatility = float(str(volatility_str).replace("%", ""))
+                            if volatility > 40:
+                                risk_flags.append("高IV")
+                                risk_level = "high" if risk_level != "high" else "high"
+                            elif volatility > 30:
+                                risk_flags.append("高IV")
+                                risk_level = "medium" if risk_level == "low" else risk_level
+                    except:
+                        pass
+                    
+                    # 2. 临近财报 (Earnings approaching)
+                    earnings_date_str = quote_data.get("Earnings", "") or quote_data.get("Earnings Date", "")
+                    if earnings_date_str and earnings_date_str != "N/A":
+                        try:
+                            # Try to parse earnings date (format may vary: "Feb 05" or "2024-02-05")
+                            # datetime is already imported at the top of the file
+                            current_date = datetime.now()
+                            
+                            # Try different date formats
+                            earnings_date = None
+                            for fmt in ["%b %d", "%B %d", "%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"]:
+                                try:
+                                    earnings_date = datetime.strptime(earnings_date_str.strip(), fmt)
+                                    # If year is not specified, assume current year
+                                    if earnings_date.year == 1900 or earnings_date.year < 2000:
+                                        earnings_date = earnings_date.replace(year=current_date.year)
+                                    break
+                                except:
+                                    continue
+                            
+                            if earnings_date:
+                                days_until_earnings = (earnings_date - current_date).days
+                                if 0 <= days_until_earnings <= 7:
+                                    risk_flags.append("临近财报")
+                                    risk_level = "high" if risk_level != "high" else "high"
+                                elif 8 <= days_until_earnings <= 14:
+                                    risk_flags.append("临近财报")
+                                    risk_level = "medium" if risk_level == "low" else risk_level
+                        except:
+                            pass
+                    
+                    # 3. 异常放量 (Abnormal volume - already detected, but add as risk flag)
+                    if volume_ratio > 3:
+                        risk_flags.append("异常放量")
+                        risk_level = "high" if risk_level != "high" else "high"
+                    elif volume_ratio > 2:
+                        risk_flags.append("异常放量")
+                        risk_level = "medium" if risk_level == "low" else risk_level
+                    
+                    # 4. 新闻不确定性高 (High news uncertainty)
+                    # Check for negative keywords in news titles
+                    news_uncertainty_score = 0
+                    if news_raw is not None:
+                        try:
+                            if hasattr(news_raw, "to_dict"):
+                                news_list = news_raw.to_dict(orient="records")
+                            else:
+                                news_list = news_raw if isinstance(news_raw, list) else []
+                            
+                            uncertainty_keywords = [
+                                'lawsuit', '诉讼', 'investigation', '调查', 'warning', '警告',
+                                'decline', '下降', 'loss', '亏损', 'cut', '削减', 'delay', '延迟',
+                                'uncertain', '不确定', 'risk', '风险', 'concern', '担忧',
+                                'volatility', '波动', 'crash', '暴跌', 'plunge', '急跌'
+                            ]
+                            
+                            for news_item in news_list[:10]:
+                                if isinstance(news_item, dict):
+                                    news_title = (news_item.get("Title", "") or news_item.get("title", "") or "").lower()
+                                    if any(keyword in news_title for keyword in uncertainty_keywords):
+                                        news_uncertainty_score += 1
+                            
+                            if news_uncertainty_score >= 3:
+                                risk_flags.append("新闻不确定性高")
+                                risk_level = "high" if risk_level != "high" else "high"
+                            elif news_uncertainty_score >= 2:
+                                risk_flags.append("新闻不确定性高")
+                                risk_level = "medium" if risk_level == "low" else risk_level
+                        except:
+                            pass
+                    
+                    # Determine risk flag icon based on risk level and flags
+                    risk_flag = ""
+                    if risk_level == "high":
+                        risk_flag = "🔴"
+                    elif risk_level == "medium":
+                        risk_flag = "⚠️"
+                    elif risk_flags:
+                        risk_flag = "⚠️"  # Show warning even if low risk but has flags
+                    
+                    # Format volume ratio
+                    volume_ratio_str = f"{volume_ratio:.2f}x" if volume_ratio > 0 else "N/A"
+                    
+                    # Format event types
+                    event_type_str = ", ".join(event_types[:3]) if event_types else "None"
+                    
+                    # Format last catalyst time
+                    last_catalyst_str = "N/A"
+                    if last_catalyst_time:
+                        try:
+                            time_diff = now - last_catalyst_time
+                            if time_diff.total_seconds() < 3600:
+                                mins = int(time_diff.total_seconds() / 60)
+                                last_catalyst_str = f"{mins}m ago"
+                            elif time_diff.total_seconds() < 86400:
+                                hours = int(time_diff.total_seconds() / 3600)
+                                last_catalyst_str = f"{hours}h ago"
+                            else:
+                                days = int(time_diff.total_seconds() / 86400)
+                                last_catalyst_str = f"{days}d ago"
+                        except:
+                            last_catalyst_str = "Recent"
+                    
+                    watchlist_items.append({
+                        "ticker": ticker,
+                        "price": price,
+                        "change": change,
+                        "change_pct": change_pct,
+                        "volume_alert": "🔥" if score >= 3 and "成交量" in " ".join(reasons) else "",
+                        "volume_ratio": volume_ratio_str,  # NEW: Volume/AvgVolume ratio
+                        "news_count": news_count,  # Already exists, but ensure it's 24h count
+                        "event_type": event_type_str,  # NEW: Event type (AI classification)
+                        "risk_flag": risk_flag,  # Risk flag icon (🔴/⚠️)
+                        "risk_level": risk_level,  # Risk level (low/medium/high)
+                        "risk_flags": risk_flags,  # List of risk flags (高IV, 临近财报, 异常放量, 新闻不确定性高)
+                        "last_catalyst_time": last_catalyst_str,  # NEW: Last catalyst time
+                        "reasons": reasons,
+                        "score": score,
+                        "last_update": now.isoformat()
+                    })
+            
+            except Exception as e:
+                # Log error but continue processing other stocks
+                print(f"Error processing {ticker}: {str(e)}")
+                continue  # Skip stocks that fail to fetch
+        
+        # Sort by score (highest first) and limit
+        watchlist_items.sort(key=lambda x: x["score"], reverse=True)
+        watchlist_items = watchlist_items[:limit]
+        
+        return {
+            "count": len(watchlist_items),
+            "items": watchlist_items,
+            "timestamp": now.isoformat()
+        }
+    
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as exc:
+        import traceback
+        error_detail = str(exc)
+        print(f"Watchlist error: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to generate watchlist: {error_detail}",
+        ) from exc
+
+
 @app.get("/quote/{ticker}")
 def get_quote(ticker: str) -> dict:
     """
@@ -102,8 +579,11 @@ def get_quote(ticker: str) -> dict:
     try:
         quote = finvizfinance(ticker.upper())
         quote_data = quote.ticker_fundament()
-        chart_url = quote.ticker_charts()
         news_raw = quote.ticker_news()
+        
+        # Get chart URL - construct Finviz URL directly to avoid library download
+        # This is a real-time chart URL, no local download needed
+        chart_url = f"https://finviz.com/chart.ashx?t={ticker.upper()}&ty=c&ta=1&p=d"
         news_records = (
             news_raw.to_dict(orient="records")
             if hasattr(news_raw, "to_dict")
@@ -241,8 +721,23 @@ def get_news_summary(url: str = Query(..., description="News article URL to summ
         ) from exc
 
 
+def cleanup_chart_files():
+    """Clean up chart image files downloaded by finvizfinance library"""
+    try:
+        # Get the backend directory
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Find all .jpg files in backend directory
+        chart_files = glob.glob(os.path.join(backend_dir, "*.jpg"))
+        for chart_file in chart_files:
+            try:
+                os.remove(chart_file)
+            except Exception:
+                pass  # Ignore errors when deleting
+    except Exception:
+        pass  # Ignore cleanup errors
+
+
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 

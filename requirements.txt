@@ -1,0 +1,5 @@
+# Streamlit frontend requirements (calls FastAPI backend)
+streamlit
+requests
+python-dotenv
+pandas
