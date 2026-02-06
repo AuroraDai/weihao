@@ -32,13 +32,14 @@ pip install -r requirements.txt
 
 **Start Command**:
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port $PORT
+uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
 ```
 
 ⚠️ **重要**：
 - Render 会自动设置 `$PORT` 环境变量
 - 必须使用 `0.0.0.0` 作为 host（不是 `127.0.0.1`）
 - 必须使用 `$PORT` 而不是固定端口号
+- `--workers 1` 确保单进程运行（Free Plan 推荐）
 
 #### 环境变量配置
 
